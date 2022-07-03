@@ -1,0 +1,964 @@
+
+<!DOCTYPE html>
+
+<html>
+
+<head>
+  <title>kaboom</title>
+  <meta charset="utf-8">
+  <style>
+    * {
+      margin: 0;
+    }
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+
+<body>
+<script src="https://kaboomjs.com/lib/0.0.0/kaboom.js"></script>
+<script src="https://kaboomjs.com/lib/0.0.0/kit/physics.js"></script>
+<script src="https://kaboomjs.com/lib/0.0.0/kit/starter.js"></script>
+<script src="https://kaboomjs.com/lib/0.0.0/kit/level.js"></script>
+
+  <script>
+kaboom.import();
+
+init({
+  ...{"fullscreen":true,"width":"600","height":"400","scale":1,"startScene":"start","version":"0.0.0","debug":false},
+  clearColor: undefined
+});
+  loadSprite("background", "sprites/background.png");
+loadSprite("background2", "sprites/background2.png");
+loadSprite("bomb", "sprites/bomb.kbmsprite");
+loadSprite("bullet", "sprites/bullet.kbmsprite");
+loadSprite("cookie", "sprites/cookie.kbmsprite");
+loadSprite("explosion", "sprites/explosion.kbmsprite");
+loadSprite("gun", "sprites/gun.kbmsprite");
+loadSprite("healthbar", "sprites/healthbar.png");
+loadSprite("healthset", "sprites/healthset.png");
+loadSprite("medkit", "sprites/medkit.kbmsprite");
+loadSprite("oreo", "sprites/oreo.kbmsprite");
+loadSprite("oreo2", "sprites/oreo2.kbmsprite");
+loadSprite("oreo3", "sprites/oreo3.kbmsprite");
+loadSprite("oreo4", "sprites/oreo4.kbmsprite");
+loadSprite("oreo5", "sprites/oreo5.png");
+loadSprite("overlay", "sprites/overlay.kbmsprite");
+loadSprite("transition", "sprites/transition.kbmsprite");
+loadSound("backgroundmusic", "sounds/backgroundmusic.mp3");
+loadSound("die", "sounds/die.mp3");
+loadSound("explosion", "sounds/explosion.mp3");
+loadSound("hit", "sounds/hit.mp3");
+loadSound("pop", "sounds/pop.mp3");
+loadSound("powerup", "sounds/powerup.mp3");
+loadSound("shoot", "sounds/shoot.mp3");
+scene("game", (args = {}) => {
+const BULLET_SPEED = 480;
+const SPEED = 100;
+const ENEMY_SPEED = 50;
+const MEDKIT_AMT = 2;
+const MAX_ENEMY_COUNT = 75;
+
+let score = 0;
+let keys = {};
+let rotation = 0;
+let reload = 0;
+let enemyCount = 0;
+let stillRunning = true;
+let powerups = {
+	medkit: 0,
+	bomb: 0
+};
+
+layers([
+	"bg",
+	"explode",
+	"fg",
+	"gun",
+	"ui",
+	"trans"
+]);
+
+
+// background
+add([
+	sprite("background"),
+	origin("topleft"),
+	scale(width() / 100, height() / 100),
+	layer("bg")
+]);
+
+const scoreText = add([
+	text("SCORE: 0", 10),
+	pos(vec2(5, 5)),
+	color(0, 0, 0),
+	origin("topleft"),
+	layer("ui")
+])
+
+
+// player
+const cookie = add([
+	sprite("cookie"),
+	pos(width() / 2, height() / 2),
+	rotate(0),
+	layer("fg"),
+	healthBar(10),
+	area(vec2(-20, -20), vec2(20, 20)),
+	"player"
+]);
+
+drawHealth(cookie);
+
+cookie.action(() => {
+	rotation = cookie.angle = -mousePos().angle(cookie.pos);
+	if (reload > 0) reload--;
+});
+
+cookie.action(() => {
+	if (keys["left"]) cookie.move(vec2(-SPEED, 0));
+	if (keys["right"]) cookie.move(vec2(SPEED, 0));
+	if (keys["up"]) cookie.move(vec2(0, -SPEED));
+	if (keys["down"]) cookie.move(vec2(0, SPEED));
+
+	cookie.pos.x = cookie.pos.x < cookie.width / 2 ? cookie.width / 2 : cookie.pos.x > width() - cookie.width / 2 ? width() - cookie.width / 2 : cookie.pos.x;
+	cookie.pos.y = cookie.pos.y < cookie.height / 2 ? cookie.height / 2 : cookie.pos.y > height() - cookie.height / 2 ? height() - cookie.height / 2 : cookie.pos.y;
+});
+
+
+// gun
+const gun = add([
+	sprite("gun"),
+	scale(2),
+	pos(0, 0),
+	layer("gun")
+]);
+
+gun.action(() => {
+	gun.angle = cookie.angle;
+	gun.pos = cookie.pos.add(vec2(cookie.width * Math.cos(-cookie.angle), cookie.height * Math.sin(-cookie.angle)));
+});
+
+
+// bullets
+function addBullet(position, angle) {
+	add([
+		sprite("bullet"),
+		pos(position.add(vec2(
+			cookie.width * Math.cos(-angle),
+			cookie.height * Math.sin(-angle)
+		))),
+		layer("fg"),
+		rotate(angle),
+		{ life: 3 },
+		"bullet"
+	]);
+}
+
+action("bullet", b => {
+	b.move(vec2(Math.cos(-b.angle), Math.sin(-b.angle)).scale(BULLET_SPEED));
+
+	if (
+		b.pos.x > width() + b.width || b.pos.x < -b.width ||
+		b.pos.y > height() + b.height || b.pos.y < -b.height
+	) destroy(b);
+});
+
+
+// enemy
+function addEnemy(isGod = false) {
+	if (!stillRunning) return;
+	if (enemyCount > MAX_ENEMY_COUNT) return;
+
+	let instance;
+	/**
+	 * 0-250     | normal
+	 * 250-1000  | velvet
+	 * 1000-1750 | velvet+mutate
+	 * 1750-2000 | velvet+super
+	 * 2000+     | velvet+super+god
+	 */
+	if (score < 250) {
+		instance = add([
+			sprite("oreo"),
+			pos(vec2(-100, -100)),
+			layer("fg"),
+			healthBar(Math.floor(rand(1, 12))),
+			area(vec2(-12, -25), vec2(12, 8)),
+			"enemy"
+		]);
+	} else if (score < 1000) {
+		instance = add([
+			sprite("oreo2"),
+			pos(vec2(-100, -100)),
+			layer("fg"),
+			healthBar(Math.floor(rand(4, 15))),
+			area(vec2(-12, -25), vec2(12, 8)),
+			"enemy"
+		]);
+	} else if (score < 1750) {
+		if (chance(0.5))
+			instance = add([
+				sprite("oreo2"),
+				pos(vec2(-100, -100)),
+				layer("fg"),
+				healthBar(Math.floor(rand(4, 15))),
+				area(vec2(-12, -25), vec2(12, 8)),
+				"enemy"
+			]);
+		else
+			instance = add([
+				sprite("oreo3"),
+				pos(vec2(-100, -100)),
+				layer("fg"),
+				healthBar(Math.floor(rand(8, 19))),
+				area(vec2(-12, -25), vec2(12, 10)),
+				"enemy"
+			]);
+	} else if (score < 2000) {
+		if (chance(0.5))
+			instance = add([
+				sprite("oreo2"),
+				pos(vec2(-100, -100)),
+				layer("fg"),
+				healthBar(Math.floor(rand(12, 25))),
+				area(vec2(-12, -25), vec2(12, 8)),
+				"enemy"
+			]);
+		else
+			instance = add([
+				sprite("oreo4"),
+				pos(vec2(-100, -100)),
+				layer("fg"),
+				healthBar(Math.floor(rand(18, 33))),
+				area(vec2(-16, -27), vec2(14, 12)),
+				"enemy"
+			]);
+	} else {
+		if (chance(0.5) && !isGod) {
+			instance = add([
+				sprite("oreo5"),
+				pos(vec2(-100, -100)),
+				layer("fg"),
+				healthBar(Math.floor(rand(28, 43))),
+				"enemy"
+			]);
+			// god mode adds a few minions
+			for (let _ = 0; _ < rand(2, 5); _++) addEnemy(true);
+		} else {
+			if (chance(0.5))
+				instance = add([
+					sprite("oreo4"),
+					pos(vec2(-100, -100)),
+					layer("fg"),
+					healthBar(Math.floor(rand(18, 33))),
+					area(vec2(-16, -27), vec2(14, 12)),
+					"enemy"
+				]);
+			else
+				instance = add([
+					sprite("oreo2"),
+					pos(vec2(-100, -100)),
+					layer("fg"),
+					healthBar(Math.floor(rand(12, 25))),
+					area(vec2(-12, -25), vec2(12, 8)),
+					"enemy"
+				]);
+		}
+	}
+
+	instance.speed = rand(-10, 10);
+
+	do {
+		instance.pos = vec2(rand(0, width()), rand(0, height()));
+	} while (instance.pos.dist(cookie.pos) < 100);
+
+	drawHealth(instance);
+	enemyCount++;
+
+	instance.on("destroy", () => {
+		enemyCount--;
+		destroy(instance.bar);
+		destroy(instance.fill);
+	});
+}
+
+loop(0.75, addEnemy);
+
+action("enemy", e => {
+	if (!stillRunning) destroy(e);
+	if (!e.pos || !e.move) return;
+	e.move(cookie.pos.sub(e.pos).unit().scale(ENEMY_SPEED + e.speed));
+
+	e.pos.x = e.pos.x < e.width / 2 ? e.width / 2 : e.pos.x > width() - e.width / 2 ? width() - e.width / 2 : e.pos.x;
+	e.pos.y = e.pos.y < e.height / 2 ? e.height / 2 : e.pos.y > height() - e.height / 2 ? height() - e.height / 2 : e.pos.y;
+});
+
+collides("bullet", "enemy", (b, e) => {
+	b.life--;
+	if (b.life <= 0) destroy(b);
+	e.health--;
+
+	if (e.health <= 0) {
+		score += e.maxHealth;
+		updateScore();
+
+		play("pop", {
+			volume: 2
+		});
+
+		add([
+			sprite("explosion"),
+			layer("explode"),
+			pos(e.pos),
+			color(1, 1, 1),
+			{ time: 0 },
+			"explode"
+		]);
+
+		destroy(e);
+	}
+});
+
+collides("player", "enemy", (p, e) => {
+	p.health--;
+	if (p.health <= 0) {
+		play("die");
+		transition("lose", score, p.pos);
+		destroy(p);
+	}
+
+	score += e.health;
+	updateScore();
+
+	play("hit");
+
+	destroy(e);
+});
+
+action("explode", t => {
+	t.time += dt() / 2;
+	t.color.a = 1 - t.time;
+	if (t.time > 1) destroy(t);
+});
+
+
+// medkit
+function addMedkit() {
+	if (powerups.medkit > 0) return;
+	powerups.medkit++;
+
+	let instance = add([
+		sprite("medkit"),
+		pos(vec2(-100, -100)),
+		layer("fg"),
+		{ health: 10 },
+		"medkit"
+	]);
+
+	instance.on("destroy", () => powerups.medkit--);
+
+	do {
+		instance.pos = vec2(rand(0, width()), rand(0, height()));
+	} while (instance.pos.dist(cookie.pos) < 100);
+}
+
+action("medkit", m => {
+	m.health -= dt();
+	if (m.health <= 0) destroy(m);
+});
+
+collides("player", "medkit", (p, m) => {
+	p.health = p.health + MEDKIT_AMT > p.maxHealth ? p.maxHealth : p.health + MEDKIT_AMT;
+	play("powerup");
+	destroy(m);
+});
+
+loop(20, () => {
+	if (cookie.health < cookie.maxHealth) addMedkit();
+});
+
+
+// bomb
+function addBomb() {
+	if (powerups.bomb > 0) return;
+	powerups.bomb++;
+
+	let instance = add([
+		sprite("bomb"),
+		pos(vec2(-100, -100)),
+		scale(3),
+		layer("fg"),
+		{ health: 10 },
+		"bomb"
+	]);
+
+	instance.on("destroy", () => powerups.bomb--);
+
+	do {
+		instance.pos = vec2(rand(0, width()), rand(0, height()));
+	} while (instance.pos.dist(cookie.pos) < 100);
+}
+
+action("bomb", b => {
+	b.health -= dt();
+	if (b.health <= 0) destroy(b);
+});
+
+collides("player", "bomb", (p, m) => {
+	play("explosion");
+
+	every("enemy", e => {
+		if (e.pos.dist(m.pos) < 150) {
+			score += e.maxHealth;
+			updateScore();
+			destroy(e);
+		}
+	});
+
+	add([
+		sprite("explosion"),
+		layer("explode"),
+		pos(m.pos),
+		scale(10, 10),
+		color(1, 1, 1),
+		{ time: 0 },
+		"explode"
+	]);
+
+	destroy(m);
+});
+
+loop(30, () => {
+	if (enemyCount > MAX_ENEMY_COUNT / 3) addBomb();
+});
+
+
+
+
+// internals
+function healthBar(maxHealth) {
+	let bar = add([
+		sprite("healthbar"),
+		pos(vec2(-100, -100)),
+		origin("topleft"),
+		layer("ui"),
+	]);
+
+	let fill = add([
+		sprite("healthset"),
+		pos(vec2(-100, -100)),
+		scale(1, 1),
+		origin("topleft"),
+		layer("ui"),
+	]);
+
+	return { health: maxHealth, maxHealth, bar, fill };
+}
+
+function drawHealth(obj) {
+	obj.action(() => {
+		obj.bar.pos = obj.pos.sub(vec2(25, 30));
+		obj.fill.pos = obj.pos.sub(vec2(25, 30));
+		obj.fill.scale.x = obj.health / obj.maxHealth;
+	});
+}
+
+function updateScore() {
+	scoreText.text = `SCORE: ${score.toLocaleString()}`;
+}
+
+keyDown("w", () => keys["up"] = true);
+keyDown("a", () => keys["left"] = true);
+keyDown("s", () => keys["down"] = true);
+keyDown("d", () => keys["right"] = true);
+keyDown("up", () => keys["up"] = true);
+keyDown("left", () => keys["left"] = true);
+keyDown("down", () => keys["down"] = true);
+keyDown("right", () => keys["right"] = true);
+
+keyRelease("w", () => keys["up"] = false);
+keyRelease("a", () => keys["left"] = false);
+keyRelease("s", () => keys["down"] = false);
+keyRelease("d", () => keys["right"] = false);
+keyRelease("up", () => keys["up"] = false);
+keyRelease("left", () => keys["left"] = false);
+keyRelease("down", () => keys["down"] = false);
+keyRelease("right", () => keys["right"] = false);
+
+mouseDown(() => {
+	if (!reload) {
+		addBullet(cookie.pos, rotation);
+		play("shoot", {
+			volume: 0.5
+		});
+		reload = 10;
+	}
+});
+
+keyDown("space", () => {
+	if (!reload) {
+		addBullet(cookie.pos, rotation);
+		play("shoot", {
+			volume: 0.5
+		});
+		reload = 10;
+	}
+});
+
+let transitioned = false;
+function transition(scene, a, v) {
+	if (transitioned) return;
+	transitioned = true;
+
+	const instance = add([
+		sprite("transition"),
+		scale(1),
+		pos(v),
+		layer("trans")
+	]);
+
+	instance.action(() => {
+		let s = instance.scale;
+		s.x += width() / height() * 150 * dt();
+		s.y += width() / height() * 150 * dt();
+		if (instance.width * s.x > width() * 2 && instance.height * s.y > height() * 2) go(scene, a);
+	});
+}
+
+
+// music
+play("backgroundmusic");
+loop(94, () => play("backgroundmusic"));
+});
+scene("help", (args = {}) => {
+const TOP_HEIGHT = 3;
+
+layers([
+	"bg",
+	"ol",
+	"fg",
+	"trans"
+]);
+
+
+add([
+	sprite("background2"),
+	origin("topleft"),
+	scale(width() / 100, height() / 100),
+	layer("bg")
+]);
+
+
+add([
+	sprite("overlay"),
+	layer("ol"),
+	pos(vec2(width() / 2, height() - 20)),
+	scale(7 * width() / height(), width() / height())
+]);
+
+
+const txt = `USE ARROW KEYS/WASD TO MOVE.
+DON'T TOUCH THE OREOS.
+CLICK/SPACE TO SHOOT.
+UNLOCK MORE OREOS BY GETTING MORE SCORE.`.split("\n");
+
+for (let i = 0; i < txt.length; i++) {
+	const t = txt[i];
+	add([
+		text(t, width() / height() * 8),
+		pos(vec2(width() / 2, 27 * i + 20)),
+		layer("fg"),
+		color(0.4, 0.1, 0.5)
+	]);
+}
+
+add([
+	text("PRESS SPACE TO START", 20),
+	pos(vec2(width() / 2 + 1, height() - 29)),
+	layer("fg"),
+	color(0.3, 0.3, 0.3)
+]);
+
+add([
+	text("PRESS SPACE TO START", 20),
+	pos(vec2(width() / 2 + 2, height() - 28)),
+	layer("fg"),
+	color(0.3, 0.3, 0.3)
+]);
+
+add([
+	text("PRESS SPACE TO START", 20),
+	pos(vec2(width() / 2, height() - 30)),
+	layer("fg"),
+	color(0)
+]);
+
+keyPress("space", () => transition("game", vec2(width() / 2, height() - 5)));
+
+
+
+
+// internals
+let transitioned = false;
+function transition(scene, v) {
+	if (transitioned) return;
+	transitioned = true;
+
+	const instance = add([
+		sprite("transition"),
+		scale(1),
+		pos(v),
+		layer("trans")
+	]);
+
+	instance.action(() => {
+		let s = instance.scale;
+		s.x += width() / height() * 150 * dt();
+		s.y += width() / height() * 150 * dt();
+		if (instance.width * s.x > width() * 2 && instance.height * s.y > height() * 2) go(scene);
+	});
+}
+});
+scene("lose", (args = {}) => {
+if (!localStorage.getItem("highscore")) localStorage.setItem("highscore", "0");
+let highScore = Number(localStorage.getItem("highscore"));
+
+
+layers([
+	"bg",
+	"ol",
+	"ui",
+	"trans"
+]);
+
+// background
+add([
+	sprite("background2"),
+	origin("topleft"),
+	scale(width() / 100, height() / 100),
+	layer("bg")
+]);
+
+
+add([
+	text("YOU DIED!", width() / height() * 13),
+	color(1, 0.6, 0.6),
+	pos(vec2(width() / 2 + 1, 21)),
+	layer("ol")
+]);
+
+add([
+	text("YOU DIED!", width() / height() * 13),
+	color(1, 0.6, 0.6),
+	pos(vec2(width() / 2 + 2, 22)),
+	layer("ol")
+]);
+
+add([
+	text("YOU DIED!", width() / height() * 13),
+	color(0.99, 0.01, 0.03),
+	pos(vec2(width() / 2, 20)),
+	layer("ui")
+]);
+
+add([
+	text(`SCORE: ${args.toLocaleString()}`, width() / height() * 8),
+	color(0.1, 0.6, 0.23),
+	pos(vec2(width() / 2 + 1, 51)),
+	layer("ol")
+]);
+
+add([
+	text(`SCORE: ${args.toLocaleString()}`, width() / height() * 8),
+	color(0.1, 0.6, 0.23),
+	pos(vec2(width() / 2 + 2, 52)),
+	layer("ol")
+]);
+
+add([
+	text(`SCORE: ${args.toLocaleString()}`, width() / height() * 8),
+	color(0, 0.5, 0.13),
+	pos(vec2(width() / 2, 50)),
+	layer("ui")
+]);
+
+if (args > highScore || true) {
+	localStorage.setItem("highscore", args.toString());
+
+	add([
+		text(`NEW HIGH SCORE!`, width() / height() * 8),
+		color(0.2, 0.4, 0.3),
+		pos(vec2(width() / 2 + 1, height() / 4 + 1)),
+		layer("ol")
+	]);
+
+	add([
+		text(`NEW HIGH SCORE!`, width() / height() * 8),
+		color(0.2, 0.4, 0.3),
+		pos(vec2(width() / 2 + 2, height() / 4 + 2)),
+		layer("ol")
+	]);
+
+	add([
+		text(`NEW HIGH SCORE!`, width() / height() * 8),
+		color(0.1, 0.3, 0.2),
+		pos(vec2(width() / 2, height() / 4)),
+		layer("ui")
+	]);
+}
+
+const spin = add([
+	text("PRESS SPACE TO RESTART", width() / height() * 13),
+	color(0, 0.01, 1),
+	pos(vec2(width() / 2, height() / 2)),
+	layer("ui")
+]);
+
+spin.action(() => {
+	spin.textSize = Math.sin(time() * 2) * 3 + width() / height() * 15;
+});
+
+
+
+keyPress("space", () => transition("start"));
+
+
+
+
+// internals
+let transitioned = false;
+function transition(scene, v = vec2(width() / 2, height() / 2)) {
+	if (transitioned) return;
+	transitioned = true;
+
+	const instance = add([
+		sprite("transition"),
+		scale(1),
+		pos(v),
+		layer("trans")
+	]);
+
+	instance.action(() => {
+		let s = instance.scale;
+		s.x += width() / height() * 150 * dt();
+		s.y += width() / height() * 150 * dt();
+		if (instance.width * s.x > width() * 2 && instance.height * s.y > height() * 2) go(scene);
+	});
+}
+});
+scene("main", (args = {}) => {
+// Copyright © 2021 Coder100
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+// The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+});
+scene("start", (args = {}) => {
+if (!localStorage.getItem("highscore")) localStorage.setItem("highscore", "0");
+let score = Number(localStorage.getItem("highscore"));
+
+layers([
+	"bg",
+	"fg",
+	"ol", // overlay
+	"ui",
+	"trans"
+]);
+
+// background
+add([
+	sprite("background"),
+	origin("topleft"),
+	scale(width() / 100, height() / 100),
+	layer("bg")
+]);
+
+
+add([
+	sprite("overlay"),
+	layer("ol"),
+	pos(vec2(width() / 2, 25)),
+	scale(3.5 * width() / height(), width() / height())
+]);
+
+add([
+	sprite("overlay"),
+	layer("ol"),
+	pos(vec2(width() / 2, height() - 15)),
+	scale(5 * width() / height(), width() / height())
+]);
+
+
+add([
+	text("COOKIE VS OREO", width() / height() * 10),
+	color(0.65, 0.35, 0.16),
+	pos(vec2(width() / 2 + 1, 21)),
+	layer("ui")
+]);
+
+add([
+	text("COOKIE VS OREO", width() / height() * 10),
+	color(0.65, 0.35, 0.16),
+	pos(vec2(width() / 2 + 2, 22)),
+	layer("ui")
+]);
+
+add([
+	text("COOKIE VS OREO", width() / height() * 10),
+	color(0.45, 0.2, 0.01),
+	pos(vec2(width() / 2, 20)),
+	layer("ui")
+]);
+
+
+add([
+	text(`HIGH SCORE: ${score.toLocaleString()}`, width() / height() * 8),
+	color(0.2, 0.4, 0.3),
+	pos(vec2(width() / 2 + 1, 23 + width() / height() * 12)),
+	layer("ui")
+]);
+
+add([
+	text(`HIGH SCORE: ${score.toLocaleString()}`, width() / height() * 8),
+	color(0.2, 0.4, 0.3),
+	pos(vec2(width() / 2 + 2, 24 + width() / height() * 12)),
+	layer("ui")
+]);
+
+add([
+	text(`HIGH SCORE: ${score.toLocaleString()}`, width() / height() * 8),
+	color(0.1, 0.3, 0.2),
+	pos(vec2(width() / 2, 22 + width() / height() * 12)),
+	layer("ui")
+]);
+
+
+const spin = add([
+	text("PRESS SPACE TO START", width() / height() * 15),
+	color(0.2, 0.3, 0.2),
+	pos(vec2(width() / 2, height() / 2)),
+	layer("ui")
+]);
+
+spin.action(() => {
+	spin.textSize = Math.sin(time() * 2) * 3 + width() / height() * 15;
+});
+
+
+add([
+	text("PRESS H FOR HELP", width() / height() * 13),
+	color(1, 0.6, 0.11),
+	pos(vec2(width() / 2 + 1, height() - width() / height() * 15 + 1)),
+	layer("ui")
+]);
+
+add([
+	text("PRESS H FOR HELP", width() / height() * 13),
+	color(1, 0.6, 0.11),
+	pos(vec2(width() / 2 + 2, height() - width() / height() * 15 + 2)),
+	layer("ui")
+]);
+
+add([
+	text("PRESS H FOR HELP", width() / height() * 13),
+	color(1, 0.5, 0.01),
+	pos(vec2(width() / 2, height() - width() / height() * 15)),
+	layer("ui")
+]);
+
+
+add([
+	sprite("cookie"),
+	pos(vec2(80, 80)),
+	layer("fg")
+]);
+
+add([
+	sprite("gun"),
+	rotate(-Math.PI / 4),
+	scale(2),
+	pos(vec2(110, 110)),
+	layer("fg")
+]);
+
+add([
+	sprite("bullet"),
+	rotate(-Math.PI / 4),
+	scale(2),
+	pos(vec2(150, 150)),
+	layer("fg")
+]);
+
+add([
+	sprite("oreo"),
+	pos(vec2(300, 300)),
+	layer("fg")
+]);
+
+add([
+	sprite("oreo"),
+	pos(vec2(400, 100)),
+	layer("fg")
+]);
+
+add([
+	sprite("explosion"),
+	pos(vec2(60, 300)),
+	layer("fg")
+]);
+
+for (let i = 0; i < width(); i += 150) {
+	add([
+		sprite("oreo"),
+		pos(vec2(rand(60, width() - 60), rand(60, height() - 60))),
+		layer("fg")
+	]);
+
+	if (chance(0.25)) add([
+		sprite("explosion"),
+		pos(vec2(rand(60, width() - 60), rand(60, height() - 60))),
+		layer("fg")
+	]);
+}
+
+
+keyPress("space", () => transition("game"));
+keyPress("h", () => transition("help", vec2(width() / 2, height() - 5)));
+
+
+
+
+// internals
+let transitioned = false;
+function transition(scene, v = vec2(width() / 2, height() / 2)) {
+	if (transitioned) return;
+	transitioned = true;
+
+	const instance = add([
+		sprite("transition"),
+		scale(1),
+		pos(v),
+		layer("trans")
+	]);
+
+	instance.action(() => {
+		let s = instance.scale;
+		s.x += width() / height() * 150 * dt();
+		s.y += width() / height() * 150 * dt();
+		if (instance.width * s.x > width() * 2 && instance.height * s.y > height() * 2) go(scene);
+	});
+}
+});
+start("start");
+
+  </script>
+</body>
+
+</html>
